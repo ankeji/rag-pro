@@ -1,0 +1,48 @@
+# Python 编译缓存文件
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# 分发/打包文件
+build/
+dist/
+eggs/
+.eggs/
+*.egg-info/
+*.egg
+
+# 虚拟环境（主流名称全覆盖）
+venv/
+env/
+ENV/
+.venv/
+.virtualenv/
+
+# 编辑器/IDE 配置
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# 环境变量/密钥配置（绝对不能上传）
+.env
+.venv
+.env.*
+config.ini
+secrets.json
+
+# 日志、数据库、临时文件
+*.log
+*.sql
+*.sqlite
+*.db
+temp/
+tmp/
+
+handbook_分块.txt
+regulation_分块.txt
+
+# Chroma 向量数据库
+chroma_db/

@@ -1,0 +1,17 @@
+python-dotenv
+requests
+numpy
+jieba
+rank-bm25
+PyPDF2
+chromadb
+redis
+fastapi
+uvicorn
+pydantic
+langchain-openai
+langchain-core
+langchain-community
+langchain-classic
+langgraph
+typing-extensions
