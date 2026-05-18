@@ -86,7 +86,7 @@ def hybrid_search(db, bm25, question, top_k=5, vector_weight=0.6, bm25_weight=0.
             seen.add(c["chunk"])
             unique_candidates.append(c)
     
-    log_step("Rerank结果", "info", f"🔍 检索问题: {question}，向量{len(vector_candidates)}个(过滤后{len(filtered_vector)}个), BM25{len(bm25_candidates)}个(过滤后{len(filtered_bm25)}个), 最终{len(unique_candidates[:top_k])}个")
+    log_step("查询结果", "info", f"🔍 检索问题: {question}，向量{len(vector_candidates)}个(过滤后{len(filtered_vector)}个), BM25{len(bm25_candidates)}个(过滤后{len(filtered_bm25)}个), 最终{len(unique_candidates[:top_k])}个")
     return unique_candidates[:top_k]
 
 # Rerank 重排

@@ -46,3 +46,8 @@ regulation_分块.txt
 
 # Chroma 向量数据库
 chroma_db/
+
+mainAgentChain.py
+mainAgentGraph.py
+main.py
+mainAgent.py
