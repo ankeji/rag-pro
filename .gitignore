@@ -49,5 +49,7 @@ chroma_db/
 
 mainAgentChain.py
 mainAgentGraph.py
-main.py
 mainAgent.py
+
+# 知识库管理
+docs/*

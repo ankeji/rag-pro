@@ -2,7 +2,7 @@
 Author: ankeji ankeji1995@163.com
 Date: 2026-05-09 14:35:31
 LastEditors: ankeji ankeji1995@163.com
-LastEditTime: 2026-05-11 16:27:47
+LastEditTime: 2026-05-18 11:48:55
 FilePath: \AI_Projects\my_agent\rag-pro\chroma_store.py
 Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koroFileHeader/wiki/%E9%85%8D%E7%BD%AE
 '''
@@ -101,3 +101,9 @@ class ChromaDB:
         doc_names = list({m.get("doc_name", "未知文档") for m in metas})
         print(f"📄 {self.collection_name} 表中的文档：{doc_names}")
         return doc_names
+
+def get_all_collections(db_path=CHROMA_DB_DIR):
+    """获取 ChromaDB 中所有的 collection 名称"""
+    client = chromadb.PersistentClient(path=db_path)
+    collections = client.list_collections()
+    return [c.name for c in collections]

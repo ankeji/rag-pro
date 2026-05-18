@@ -9,29 +9,27 @@ class Config:
     BASE_URL = "https://openapi.7x24cc.com/v1/chat/completions"
     
     CHROMA_DB_DIR = os.path.join(_PROJECT_DIR, "chroma_db")
-    PDF_PATH = os.path.join(_PROJECT_DIR, "docs", "新员工手册.pdf")
     
-    MAX_SIZE = 600
-    MIN_SIZE = 50
-    MAX_CONTEXT_LEN = 2000
+    MAX_SIZE = 600 # 最大chunk长度
+    MIN_SIZE = 50 # 最小chunk长度
+    MAX_CONTEXT_LEN = 2000 # 最大上下文长度
     
-    TOP_K = 3
-    VECTOR_WEIGHT = 0.6
-    BM25_WEIGHT = 0.4
+    TOP_K = 3 # 最多返回多少个chunk
+    VECTOR_WEIGHT = 0.6 # 向量权重
+    BM25_WEIGHT = 0.4 # BM25权重
     
-    RERANK_TOP_K = 5
-    RERANK_THRESHOLD = 0
+    RERANK_TOP_K = 5 # Rerank最多返回多少个chunk
+    RERANK_THRESHOLD = 0 # Rerank阈值
     
-    VECTOR_SEARCH_THRESHOLD = 0.5
-    BM25_SEARCH_THRESHOLD = 0.5
+    VECTOR_SEARCH_THRESHOLD = 0.5 # 向量搜索阈值
+    BM25_SEARCH_THRESHOLD = 0.5 # BM25搜索阈值
     
-    ENABLE_HISTORY_SUMMARY = True
-    HISTORY_SUMMARY_THRESHOLD = 6
-    HISTORY_KEEP_ROUNDS = 2
+    ENABLE_HISTORY_SUMMARY = True # 是否启用历史摘要
+    HISTORY_SUMMARY_THRESHOLD = 6 # 历史摘要阈值
+    HISTORY_KEEP_ROUNDS = 2 # 历史摘要保留轮数
     
-    NO_PROXY = {"http": None, "https": None}
-    ALLOW_COLLECTIONS = {"handbook", "regulation"}
-    ENABLE_DANGER_OP = True
+    NO_PROXY = {"http": None, "https": None} 
+    ENABLE_DANGER_OP = True # 是否启用危险操作
     
     def to_dict(self):
         return {
@@ -63,7 +61,5 @@ LLM_URL = config.LLM_URL
 RERANK_URL = config.RERANK_URL
 BASE_URL = config.BASE_URL
 CHROMA_DB_DIR = config.CHROMA_DB_DIR
-PDF_PATH = config.PDF_PATH
 NO_PROXY = config.NO_PROXY
-ALLOW_COLLECTIONS = config.ALLOW_COLLECTIONS
 ENABLE_DANGER_OP = config.ENABLE_DANGER_OP

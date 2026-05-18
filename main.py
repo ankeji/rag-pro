@@ -1,4 +1,5 @@
 import os
+import traceback
 
 os.environ["ANONYMIZED_TELEMETRY"] = "False"
 os.environ["LANGCHAIN_PROJECT"] = "rag-pro-unified"
@@ -6,20 +7,11 @@ os.environ["LANGCHAIN_PROJECT"] = "rag-pro-unified"
 from dotenv import load_dotenv
 load_dotenv()
 
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
-from typing import Optional, List
-import uvicorn
-import json
-import queue
-
 from config import config
-from chroma_store import ChromaDB, get_all_collections
+from chroma_store import ChromaDB
 from retriever import BM25Retriever, hybrid_search, rerank
 from llm_utils import generate_multi_query, compress_context, llm_answer
-from log_utils import log_step, clear_logs, get_logs, set_log_callback
+from log_utils import log_step
 from langchain_openai import ChatOpenAI
 from langchain_classic.agents import create_tool_calling_agent, AgentExecutor
 from langchain_core.prompts import ChatPromptTemplate
@@ -27,7 +19,6 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.graph import StateGraph, START, END
 from typing_extensions import TypedDict
 from langchain_community.chat_models import ChatTongyi
-import time
 
 KEY = os.getenv("KEY")
 API_KEY = os.getenv("API_KEY")
@@ -36,6 +27,7 @@ try:
     from session_store import get_session_history, save_session_history
     REDIS_AVAILABLE = True
 except ImportError:
+    print("⚠️ session_store 未找到，使用内存存储")
     REDIS_AVAILABLE = False
     _memory_store = {}
     def get_session_history(session_id):
@@ -48,14 +40,14 @@ from tools import (
     check_tool_permission, set_user_role
 )
 
+# ================= 公共组件 =================
 tools = [get_collection_count, clear_collection, import_pdf_files]
 
-# llm_qwen = ChatOpenAI(
-#     model="qwen-turbo", 
-#     api_key=API_KEY, 
-#     base_url=LLM_URL,
-#     temperature=0.1,
-#     max_tokens=500
+# llm_glm = ChatOpenAI(
+#     model="glm-5.1", 
+#     api_key=KEY, 
+#     base_url=BASE_URL.replace("/chat/completions", ""),
+#     temperature=0.1
 # )
 
 llm_qwen = ChatTongyi(model="qwen-turbo", api_key=API_KEY)
@@ -65,6 +57,7 @@ def _get_doc_name(db, fallback="未知文档"):
         return (db.metadatas[0] or {}).get("doc_name", fallback)
     return fallback
 
+# ================= LangGraph 工作流节点 =================
 class WorkflowState(TypedDict):
     messages: list
     session_id: str
@@ -83,8 +76,11 @@ class WorkflowState(TypedDict):
     error: str
 
 def node_init_database(state):
+    """节点1：初始化数据库（动态加载所有 collection）"""
     log_step("检查加载数据库表")
     try:
+        from chroma_store import get_all_collections
+        
         collection_names = get_all_collections()
         if not collection_names:
             log_step("检查加载数据库表", "warning", "未找到任何 collection，请先运行 pdf_import_script.py 导入文档")
@@ -131,6 +127,7 @@ def node_init_database(state):
         return {**state, "answer": f"❌ 数据库初始化失败：{str(e)}", "error": str(e), "end": True}
 
 def node_get_history(state):
+    """节点2：获取历史消息"""
     log_step("开始获取历史消息")
     try:
         session_id = state["session_id"]
@@ -143,6 +140,7 @@ def node_get_history(state):
         return {**state, "messages": []}
 
 def node_permission_check(state):
+    """节点3：权限校验"""
     user_input = state["user_input"]
     
     tool_to_call = None
@@ -168,6 +166,7 @@ def node_permission_check(state):
     return state
 
 def node_multi_query(state):
+    """节点4：生成多检索问句"""
     user_input = state["user_input"]
     log_step("生成多检索问句")
     try:
@@ -180,6 +179,7 @@ def node_multi_query(state):
         return {**state, "queries": [user_input]}
 
 def node_vector_search(state):
+    """节点5：向量检索"""
     log_step("开始向量检索")
     try:
         collections = state.get("collections", {})
@@ -205,6 +205,7 @@ def node_vector_search(state):
         return {**state, "vector_candidates": []}
 
 def node_bm25_search(state):
+    """节点6：BM25关键词检索"""
     log_step("开始BM25关键词检索")
     try:
         collections = state.get("collections", {})
@@ -230,11 +231,12 @@ def node_bm25_search(state):
         return {**state, "bm25_candidates": []}
 
 def node_merge_results(state):
+    """节点7：合并检索结果"""
     log_step("开始合并向量检索结果和BM25关键词检索结果")
     try:
         vector_candidates = state.get("vector_candidates", [])
         bm25_candidates = state.get("bm25_candidates", [])
-        
+
         all_candidates = vector_candidates + bm25_candidates
         log_step("合并检索结果", "done", f"合并后共{len(all_candidates)}个候选")
         return {**state, "all_candidates": all_candidates}
@@ -243,6 +245,7 @@ def node_merge_results(state):
         return {**state, "all_candidates": []}
 
 def node_deduplicate(state):
+    """节点8：结果去重"""
     log_step("开始对结果进行去重")
     try:
         all_candidates = state.get("all_candidates", [])
@@ -262,6 +265,7 @@ def node_deduplicate(state):
         return {**state, "unique_candidates": []}
 
 def node_rerank(state):
+    """节点9：Rerank精排序"""
     log_step("开始使用Rerank精排序")
     try:
         user_input = state["user_input"]
@@ -271,7 +275,7 @@ def node_rerank(state):
             log_step("Rerank精排序", "info", "无候选结果，跳过")
             return {**state, "candidates": []}
         
-        candidates = rerank(user_input, unique_candidates)
+        candidates = rerank(user_input, unique_candidates)[:config.RERANK_TOP_K]
         log_step("Rerank精排序", "done", f"排序完成，保留前{len(candidates)}个结果")
         
         for i, c in enumerate(candidates[:3]):
@@ -285,6 +289,7 @@ def node_rerank(state):
         return {**state, "candidates": state.get("unique_candidates", [])}
 
 def node_compress_context(state):
+    """节点10：压缩上下文"""
     log_step("开始压缩上下文")
     try:
         candidates = state.get("candidates", [])
@@ -293,7 +298,7 @@ def node_compress_context(state):
             log_step("压缩上下文", "info", "无候选结果，上下文为空")
             return {**state, "context": ""}
         
-        ctx = compress_context(candidates, max_len=2000)
+        ctx = compress_context(candidates, max_len=config.MAX_CONTEXT_LEN)
         log_step("压缩上下文", "done", f"上下文长度:{len(ctx)}字符")
         return {**state, "context": ctx}
     except Exception as e:
@@ -301,6 +306,7 @@ def node_compress_context(state):
         return {**state, "context": ""}
 
 def node_generate_answer(state):
+    """节点11：模型生成回答"""
     log_step("开始交给模型生成回答")
     try:
         user_input = state["user_input"]
@@ -323,6 +329,7 @@ def node_generate_answer(state):
         return {**state, "answer": f"生成回答失败：{str(e)}"}
 
 def node_save_history(state):
+    """节点12：Redis缓存历史"""
     log_step("开始Redis缓存历史")
     try:
         session_id = state["session_id"]
@@ -342,6 +349,7 @@ def node_save_history(state):
         return state
 
 def node_agent_tool_call(state):
+    """节点：Agent工具调用"""
     user_input = state["user_input"]
         
     prompt = ChatPromptTemplate.from_messages([
@@ -369,11 +377,14 @@ def node_agent_tool_call(state):
     ])
     
     agent = create_tool_calling_agent(llm_qwen, tools, prompt)
-    agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=False, handle_parsing_errors=True)
+    agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True, handle_parsing_errors=True)
     
     try:
         res = agent_executor.invoke({"input": user_input})
         answer = res.get("output", "无输出")
+        
+        print(f"[DEBUG] res keys: {res.keys()}")
+        print(f"[DEBUG] intermediate_steps: {res.get('intermediate_steps', 'NOT FOUND')}")
         
         tool_calls = res.get("intermediate_steps", [])
         if tool_calls:
@@ -393,7 +404,9 @@ def node_agent_tool_call(state):
         log_step("Agent工具调用", "error", str(e))
         return {**state, "answer": f"工具调用失败：{str(e)}", "end": True}
 
+# ================= 构建工作流 =================
 def build_workflow():
+    """构建完整的LangGraph工作流"""
     graph = StateGraph(WorkflowState)
     
     graph.add_node("init_database", node_init_database)
@@ -436,89 +449,51 @@ def build_workflow():
     
     return graph.compile()
 
-workflow = build_workflow()
-
-app = FastAPI(title="企业知识库助手 API", version="1.0.0")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-class ChatRequest(BaseModel):
-    message: str
-    session_id: Optional[str] = "default"
-
-class ChatResponse(BaseModel):
-    answer: str
-    session_id: str
-    logs: List[dict] = []
-    error: Optional[str] = None
-
-class RoleRequest(BaseModel):
-    role: str
-
-class HistoryResponse(BaseModel):
-    messages: List[dict]
-    session_id: str
-
-@app.get("/")
-async def root():
-    return {"message": "企业知识库助手 API", "status": "running"}
-
-@app.post("/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest):
-    try:
-        clear_logs()
-        SESSION_ID = request.session_id
-        user_input = request.message
-        initial_state = {
-            "messages": [],
-            "session_id": SESSION_ID,
-            "user_input": user_input,
-            "collections": {},
-            "queries": [],
-            "vector_candidates": [],
-            "bm25_candidates": [],
-            "all_candidates": [],
-            "unique_candidates": [],
-            "candidates": [],
-            "context": "",
-            "answer": "",
-            "rag_available": False,
-            "end": False,
-            "error": ""
-        }
-        
-        final_state = workflow.invoke(initial_state)
-        logs = get_logs()
-        
-        return ChatResponse(
-            answer=final_state.get("answer", "无回答"),
-            session_id=request.session_id,
-            logs=logs,
-            error=final_state.get("error")
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/chat/stream")
-async def chat_stream(request: ChatRequest):
-    log_queue = queue.Queue()
+# ================= 主函数 =================
+def main():
+    print("\n" + "=" * 60)
+    print("🚀 企业知识库助手 - RAG + Agent + 工作流 完整版")
+    print("=" * 60)
+    print("功能特性：")
+    print("  ✅ RAG 检索（向量 + BM25 混合检索 + 去重 + Ranker重排 + 上下文压缩 + 回答生成 + Redis缓存历史会话 + 权限校验）")
+    print("  ✅ Agent 工具调用（查表、清空、导入）")
+    print("  ✅ LangGraph 工作流编排")
+    print("  ✅ Redis 会话存储")
+    print("  ✅ 权限校验")
+    print("  ✅ 详细执行日志")
+    print("=" * 60)
     
-    def log_callback(log_entry):
-        log_queue.put(log_entry)
+    workflow = build_workflow()
+    SESSION_ID = "user_default"
     
-    def generate():
+    print("\n💡 使用说明：")
+    print("  - 输入问题进行知识库检索")
+    print("  - 输入 '清空表名' 执行工具调用（如：清空handbook）")
+    print("  - 输入 '/role admin/user' 切换角色")
+    print("  - 输入 'q' 退出")
+    print("=" * 60)
+    
+    while True:
         try:
-            clear_logs()
-            set_log_callback(log_callback)
+            user_input = input("\n💬 请输入问题：").strip()
             
-            SESSION_ID = request.session_id
-            user_input = request.message
+            if user_input.lower() == 'q':
+                print("👋 再见！")
+                break
+            
+            if not user_input:
+                continue
+            
+            if user_input.startswith("/role "):
+                new_role = user_input.split()[1]
+                set_user_role(new_role)
+                print(f"✅ 已切换为 {new_role} 角色")
+                continue
+            
+            print("\n" + "─" * 60)
+            print(f"📋 开始处理: {user_input}")
+            print("─" * 60)
+            
             initial_state = {
                 "messages": [],
                 "session_id": SESSION_ID,
@@ -537,147 +512,23 @@ async def chat_stream(request: ChatRequest):
                 "error": ""
             }
             
-            def run_workflow():
-                return workflow.invoke(initial_state)
+            final_state = workflow.invoke(initial_state)
             
-            import threading
-            result = [None]
-            error = [None]
+            print("\n" + "=" * 60)
+            print(f"✅ 最终回答：")
+            print("=" * 60)
+            print(final_state.get("answer", "无回答"))
+            print("=" * 60)
             
-            def workflow_thread():
-                try:
-                    result[0] = workflow.invoke(initial_state)
-                except Exception as e:
-                    error[0] = str(e)
-            
-            thread = threading.Thread(target=workflow_thread)
-            thread.start()
-            
-            while thread.is_alive():
-                try:
-                    log_entry = log_queue.get(timeout=0.1)
-                    yield f"data: {json.dumps({'type': 'log', 'data': log_entry})}\n\n"
-                except queue.Empty:
-                    continue
-            
-            while not log_queue.empty():
-                log_entry = log_queue.get()
-                yield f"data: {json.dumps({'type': 'log', 'data': log_entry})}\n\n"
-            
-            thread.join()
-            
-            if error[0]:
-                yield f"data: {json.dumps({'type': 'error', 'data': error[0]})}\n\n"
-            else:
-                final_state = result[0]
-                answer = final_state.get("answer", "无回答")
-                yield f"data: {json.dumps({'type': 'answer', 'data': answer})}\n\n"
-                
+            if final_state.get("error"):
+                print(f"⚠️ 错误信息：{final_state['error']}")
+        
+        except KeyboardInterrupt:
+            print("\n\n👋 用户中断，退出程序")
+            break
         except Exception as e:
-            yield f"data: {json.dumps({'type': 'error', 'data': str(e)})}\n\n"
-        finally:
-            set_log_callback(None)
-    
-    return StreamingResponse(
-        generate(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no"
-        }
-    )
-
-@app.post("/role")
-async def set_role(request: RoleRequest):
-    success = set_user_role(request.role)
-    if success:
-        return {"message": f"已切换为 {request.role} 角色", "role": request.role}
-    raise HTTPException(status_code=400, detail=f"无效的角色: {request.role}")
-
-@app.get("/role")
-async def get_role():
-    from tools import current_user_role
-    return {"role": current_user_role}
-
-@app.get("/history/{session_id}", response_model=HistoryResponse)
-async def get_history(session_id: str):
-    messages = get_session_history(session_id)
-    formatted_messages = []
-    for msg in messages:
-        if isinstance(msg, HumanMessage):
-            formatted_messages.append({"role": "user", "content": msg.content})
-        elif isinstance(msg, AIMessage):
-            formatted_messages.append({"role": "assistant", "content": msg.content})
-    return HistoryResponse(messages=formatted_messages, session_id=session_id)
-
-@app.delete("/history/{session_id}")
-async def clear_history(session_id: str):
-    save_session_history(session_id, [])
-    return {"message": f"已清空会话 {session_id} 的历史记录"}
-
-@app.get("/stats")
-async def get_stats():
-    try:
-        collection_names = get_all_collections()
-        
-        collections = []
-        total_count = 0
-        
-        for collection_name in collection_names:
-            db = ChromaDB(collection_name=collection_name)
-            if db.load():
-                count = db.collection.count()
-                if count > 0:
-                    doc_name = _get_doc_name(db, collection_name)
-                    collections.append({
-                        "name": collection_name,
-                        "doc_name": doc_name,
-                        "count": count
-                    })
-                    total_count += count
-        
-        return {
-            "collections": collections,
-            "total_count": total_count,
-            "rag_available": total_count > 0
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/config")
-async def get_config():
-    from config import config
-    return config.to_dict()
-
-class ConfigUpdate(BaseModel):
-    MAX_SIZE: Optional[int] = None
-    MIN_SIZE: Optional[int] = None
-    MAX_CONTEXT_LEN: Optional[int] = None
-    TOP_K: Optional[int] = None
-    VECTOR_WEIGHT: Optional[float] = None
-    BM25_WEIGHT: Optional[float] = None
-    RERANK_TOP_K: Optional[int] = None
-    RERANK_THRESHOLD: Optional[float] = None
-    VECTOR_SEARCH_THRESHOLD: Optional[float] = None
-    BM25_SEARCH_THRESHOLD: Optional[float] = None
-    ENABLE_HISTORY_SUMMARY: Optional[bool] = None
-    HISTORY_SUMMARY_THRESHOLD: Optional[int] = None
-    HISTORY_KEEP_ROUNDS: Optional[int] = None
-    ENABLE_DANGER_OP: Optional[bool] = None
-
-@app.post("/config")
-async def update_config(config_data: ConfigUpdate):
-    from config import config
-    
-    updates = []
-    for key, value in config_data.dict(exclude_none=True).items():
-        if value is not None:
-            setattr(config, key, value)
-            updates.append(f"{key}={value}")
-    
-    log_step("更新配置", "done", ", ".join(updates))
-    return {"message": "配置已更新", "updates": updates}
+            print(f"\n❌ 系统错误：{type(e).__name__}: {str(e)}")
+            traceback.print_exc()
 
 if __name__ == "__main__":
-    uvicorn.run(app, port=8000)
+    main()

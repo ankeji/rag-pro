@@ -2,14 +2,14 @@
 Author: ankeji ankeji1995@163.com
 Date: 2026-05-11 10:31:32
 LastEditors: ankeji ankeji1995@163.com
-LastEditTime: 2026-05-15 15:58:25
+LastEditTime: 2026-05-18 11:05:25
 FilePath: \AI_Projects\my_agent\rag-pro\tools.py
 Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
 '''
-from chroma_store import ChromaDB
+from chroma_store import ChromaDB, get_all_collections
 from langchain.tools import tool
 from pdf_import_script import batch_pdf_import
-from config import config, ALLOW_COLLECTIONS, ENABLE_DANGER_OP
+from config import config, ENABLE_DANGER_OP
 from embedding_utils import get_embedding
 from retriever import BM25Retriever, hybrid_search, rerank
 from llm_utils import compress_context, llm_answer
@@ -40,33 +40,62 @@ def set_user_role(role: str):
 
 # ================= 工具1：查询表数量 =================
 @tool
-def get_collection_count(collection_name: str) -> str:
-    """查询表数量。参数 collection_name 只能是 'handbook' 或 'regulation'。
-    1. 如果用户说查询表数量，请分别调用两次。
-        例如：查询 handbook 表数量，调用两次 get_collection_count(collection_name="handbook")
-        例如：查询 regulation 表数量，调用两次 get_collection_count(collection_name="regulation")
-    2. 如果表数量都为空，则分别返回"表 handbook 数据量：0"和"表 regulation 数据量：0"。
+def get_collection_count(collection_name: str = None) -> str:
+    """查询表数量。
+    1. 如果不传参数，返回所有表的数量
+    2. 如果传入 collection_name，返回指定表的数量
     """
     try:
-        db = ChromaDB(collection_name=collection_name)
-        return f"表 {collection_name} 数据量：{db.collection.count()}"
-    except:
-        return "查询失败"
+        if collection_name:
+            db = ChromaDB(collection_name=collection_name)
+            count = db.collection.count()
+            return f"表 {collection_name} 数据量：{count}"
+        else:
+            collection_names = get_all_collections()
+            if not collection_names:
+                return "❌ 未找到任何数据表，请先运行 pdf_import_script.py 导入文档"
+            
+            results = []
+            for name in collection_names:
+                db = ChromaDB(collection_name=name)
+                count = db.collection.count()
+                if count > 0:
+                    results.append(f"表 {name} 数据量：{count}")
+            
+            if not results:
+                return "❌ 所有数据表都为空，请先运行 pdf_import_script.py 导入文档"
+            
+            return "\n".join(results)
+    except Exception as e:
+        return f"查询失败：{str(e)}"
 
 # ================= 工具2：清空表 =================
 @tool
 def clear_collection(collection_name: str) -> str:
-    """清空指定的数据表。参数 collection_name 只能是 'handbook' 或 'regulation'。如果用户说清空所有表，请分别调用两次。"""
+    """清空指定的数据表。参数 collection_name 为要清空的表名。如果用户说清空所有表，请传入 'all'。"""
     if not ENABLE_DANGER_OP:
         return "❌ 系统已禁用高危清空操作"
 
-    if collection_name not in ALLOW_COLLECTIONS:
-        return f"❌ 非法表名，仅允许操作：{ALLOW_COLLECTIONS}"
-
     try:
-        db = ChromaDB(collection_name=collection_name)
-        db.clear()
-        return f"✅ 表 {collection_name} 已清空"
+        if collection_name == "all":
+            collection_names = get_all_collections()
+            results = []
+            for name in collection_names:
+                db = ChromaDB(collection_name=name)
+                count = db.collection.count()
+                if count > 0:
+                    db.clear()
+                    results.append(f"✅ 表 {name} 已清空")
+            if not results:
+                return "❌ 所有数据表都为空，无需清空"
+            return "\n".join(results)
+        else:
+            db = ChromaDB(collection_name=collection_name)
+            count = db.collection.count()
+            if count == 0:
+                return f"⚠️ 表 {collection_name} 已经为空"
+            db.clear()
+            return f"✅ 表 {collection_name} 已清空"
     except Exception as e:
         return f"❌ 清空失败：{str(e)}"
 
@@ -92,16 +121,8 @@ def query_knowledge_base(question: str) -> str:
     try:
         print(f"🔍 开始查询知识库：{question}")
         
-        db_handbook = ChromaDB(collection_name="handbook")
-        db_regulation = ChromaDB(collection_name="regulation")
-        
-        handbook_loaded = db_handbook.load()
-        regulation_loaded = db_regulation.load()
-        
-        handbook_count = db_handbook.collection.count() if handbook_loaded else 0
-        regulation_count = db_regulation.collection.count() if regulation_loaded else 0
-        
-        if handbook_count == 0 and regulation_count == 0:
+        collection_names = get_all_collections()
+        if not collection_names:
             return "❌ 知识库为空，无法进行查询。请先使用「导入PDF」功能导入数据。"
         
         def _get_doc_name(db, fallback="未知文档"):
@@ -111,29 +132,21 @@ def query_knowledge_base(question: str) -> str:
         
         all_candidates = []
         
-        if handbook_count > 0:
-            handbook_doc_name = _get_doc_name(db_handbook, "新员工手册")
-            bm25_handbook = BM25Retriever(db_handbook.chunks, doc_name=handbook_doc_name)
-            candidates_handbook = hybrid_search(
-                db_handbook, bm25_handbook, question,
-                top_k=config.TOP_K,
-                vector_weight=config.VECTOR_WEIGHT,
-                bm25_weight=config.BM25_WEIGHT
-            )
-            all_candidates.extend(candidates_handbook)
-            print(f"📚 handbook 检索到 {len(candidates_handbook)} 条结果")
-        
-        if regulation_count > 0:
-            regulation_doc_name = _get_doc_name(db_regulation, "规章制度")
-            bm25_regulation = BM25Retriever(db_regulation.chunks, doc_name=regulation_doc_name)
-            candidates_regulation = hybrid_search(
-                db_regulation, bm25_regulation, question,
-                top_k=config.TOP_K,
-                vector_weight=config.VECTOR_WEIGHT,
-                bm25_weight=config.BM25_WEIGHT
-            )
-            all_candidates.extend(candidates_regulation)
-            print(f"📚 regulation 检索到 {len(candidates_regulation)} 条结果")
+        for collection_name in collection_names:
+            db = ChromaDB(collection_name=collection_name)
+            if db.load():
+                count = db.collection.count()
+                if count > 0:
+                    doc_name = _get_doc_name(db, collection_name)
+                    bm25 = BM25Retriever(db.chunks, doc_name=doc_name)
+                    candidates = hybrid_search(
+                        db, bm25, question,
+                        top_k=config.TOP_K,
+                        vector_weight=config.VECTOR_WEIGHT,
+                        bm25_weight=config.BM25_WEIGHT
+                    )
+                    all_candidates.extend(candidates)
+                    print(f"📚 {collection_name} 检索到 {len(candidates)} 条结果")
         
         # 去重
         seen = set()
