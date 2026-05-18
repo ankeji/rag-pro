@@ -1353,7 +1353,7 @@ cd knowledge-assistant
 npm install
 npm run dev
 ```
-
+> 前端代码仓库：访问 [前端代码仓库](https://github.com/your_username/knowledge-assistant) 获取最新代码
 ---
 
 ## API 接口
